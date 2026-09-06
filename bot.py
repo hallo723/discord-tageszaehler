@@ -28,21 +28,37 @@ TIMEZONE = ZoneInfo("Europe/Berlin")
 CONFIG_FILE = Path("config.json")
 
 
+# ============================================================
+# STANDARD-KONFIGURATION
+# ============================================================
+
 DEFAULT_CONFIG = {
     "channel_id": None,
 
     "running": False,
     "paused": False,
 
-    "hour": 12,
-    "minute": 0,
+    # Mehrere Uhrzeiten möglich
+    # Beispiel:
+    # ["12:00", "18:00", "21:00"]
+    "times": [
+        "12:00"
+    ],
 
+    # Nächster Tag
     "day": 1,
+
+    # Wie viel pro Nachricht erhöht wird
     "increment": 1,
 
-    # Speichert jetzt Datum + Uhrzeit
-    # Beispiel: 2026-09-06 12:00
-    "last_run": ""
+    # Bereits ausgeführte Zeitpunkte
+    #
+    # Beispiel:
+    # [
+    #     "2026-09-06 12:00",
+    #     "2026-09-06 18:00"
+    # ]
+    "sent_slots": []
 }
 
 
@@ -51,18 +67,18 @@ DEFAULT_CONFIG = {
 # ============================================================
 
 def load_config():
-
     if not CONFIG_FILE.exists():
+        print(
+            "Keine config.json gefunden."
+        )
 
         print(
-            "Keine config.json vorhanden. "
-            "Standardwerte werden verwendet."
+            "Standard-Konfiguration wird verwendet."
         )
 
         return DEFAULT_CONFIG.copy()
 
     try:
-
         with CONFIG_FILE.open(
             "r",
             encoding="utf-8"
@@ -73,6 +89,19 @@ def load_config():
         config = DEFAULT_CONFIG.copy()
         config.update(saved)
 
+        # Alte Config-Versionen absichern
+        if not isinstance(
+            config.get("times"),
+            list
+        ):
+            config["times"] = ["12:00"]
+
+        if not isinstance(
+            config.get("sent_slots"),
+            list
+        ):
+            config["sent_slots"] = []
+
         print(
             "config.json erfolgreich geladen."
         )
@@ -80,13 +109,12 @@ def load_config():
         return config
 
     except Exception as error:
-
         print(
             f"Fehler beim Laden der config.json: {error}"
         )
 
         print(
-            "Standardwerte werden verwendet."
+            "Standard-Konfiguration wird verwendet."
         )
 
         return DEFAULT_CONFIG.copy()
@@ -97,9 +125,7 @@ def load_config():
 # ============================================================
 
 def save_config():
-
     try:
-
         with CONFIG_FILE.open(
             "w",
             encoding="utf-8"
@@ -115,9 +141,8 @@ def save_config():
         return True
 
     except Exception as error:
-
         print(
-            f"FEHLER beim Speichern der config.json: {error}"
+            f"Fehler beim Speichern der config.json: {error}"
         )
 
         return False
@@ -137,15 +162,25 @@ intents.message_content = True
 class TageszaehlerBot(commands.Bot):
 
     def __init__(self):
-
         super().__init__(
             command_prefix="!",
             intents=intents
         )
 
     async def setup_hook(self):
+        try:
+            synced = await self.tree.sync(
+                guild=GUILD
+            )
 
-        await synchronize_commands()
+            print(
+                f"{len(synced)} Slash-Befehle synchronisiert."
+            )
+
+        except Exception as error:
+            print(
+                f"Fehler beim Synchronisieren: {error}"
+            )
 
 
 bot = TageszaehlerBot()
@@ -153,30 +188,98 @@ tree = bot.tree
 
 
 # ============================================================
-# ZEIT
+# ZEIT-FUNKTIONEN
 # ============================================================
 
 def now():
-
     return datetime.now(TIMEZONE)
 
 
 def current_time():
-
     return now().strftime("%H:%M")
 
 
 def current_datetime():
-
-    return now().strftime("%Y-%m-%d %H:%M")
-
-
-def configured_time():
-
-    return (
-        f"{int(config['hour']):02d}:"
-        f"{int(config['minute']):02d}"
+    return now().strftime(
+        "%Y-%m-%d %H:%M"
     )
+
+
+# ============================================================
+# UHRZEITEN
+# ============================================================
+
+def get_times():
+    times = config.get(
+        "times",
+        ["12:00"]
+    )
+
+    if not isinstance(
+        times,
+        list
+    ):
+        return ["12:00"]
+
+    return times
+
+
+def format_times():
+    times = get_times()
+
+    if not times:
+        return "Keine"
+
+    return ", ".join(times)
+
+
+def validate_time(time_string):
+    try:
+        parts = time_string.strip().split(":")
+
+        if len(parts) != 2:
+            return None
+
+        hour = int(parts[0])
+        minute = int(parts[1])
+
+        if not 0 <= hour <= 23:
+            return None
+
+        if not 0 <= minute <= 59:
+            return None
+
+        return f"{hour:02d}:{minute:02d}"
+
+    except (ValueError, TypeError):
+        return None
+
+
+def parse_times(text):
+    parts = text.split(",")
+
+    result = []
+
+    for part in parts:
+        cleaned = part.strip()
+
+        if not cleaned:
+            continue
+
+        valid = validate_time(cleaned)
+
+        if valid is None:
+            return None
+
+        if valid not in result:
+            result.append(valid)
+
+    if not result:
+        return None
+
+    result.sort()
+
+    return result
 
 
 # ============================================================
@@ -184,21 +287,19 @@ def configured_time():
 # ============================================================
 
 async def get_target_channel():
-
-    channel_id = config.get("channel_id")
+    channel_id = config.get(
+        "channel_id"
+    )
 
     if not channel_id:
-
         return None
 
     try:
-
         channel = bot.get_channel(
             int(channel_id)
         )
 
         if channel is not None:
-
             return channel
 
         channel = await bot.fetch_channel(
@@ -208,7 +309,6 @@ async def get_target_channel():
         return channel
 
     except Exception as error:
-
         print(
             "Zielkanal konnte nicht geladen werden:"
         )
@@ -227,9 +327,7 @@ async def answer(
     text: str,
     ephemeral: bool = False
 ):
-
     try:
-
         if interaction.response.is_done():
 
             await interaction.followup.send(
@@ -245,9 +343,8 @@ async def answer(
             )
 
     except Exception as error:
-
         print(
-            f"Fehler beim Antworten auf Interaction: {error}"
+            f"Fehler bei Interaction-Antwort: {error}"
         )
 
 
@@ -257,7 +354,7 @@ async def answer(
 
 @tree.command(
     name="setup",
-    description="Richtet den Tageszähler in diesem Kanal ein."
+    description="Richtet den Tageszähler ein."
 )
 @app_commands.checks.has_permissions(
     manage_guild=True
@@ -271,13 +368,14 @@ async def setup(
     config["running"] = False
     config["paused"] = False
 
-    config["hour"] = 12
-    config["minute"] = 0
+    config["times"] = [
+        "12:00"
+    ]
 
     config["day"] = 1
     config["increment"] = 1
 
-    config["last_run"] = ""
+    config["sent_slots"] = []
 
     save_config()
 
@@ -285,17 +383,11 @@ async def setup(
         interaction,
 
         "✅ **Tageszähler eingerichtet!**\n\n"
-
         f"📍 Kanal: <#{interaction.channel_id}>\n"
-
         "📅 Start: **Tag 1**\n"
-
-        "⏰ Zeit: **12:00 Uhr**\n"
-
+        "⏰ Zeiten: **12:00 Uhr**\n"
         "➕ Schrittweite: **+1**\n"
-
-        "⏹️ Status: **gestoppt**\n\n"
-
+        "⏹️ Status: **Gestoppt**\n\n"
         "Benutze `/start`, um ihn zu starten."
     )
 
@@ -320,7 +412,7 @@ async def start(
         await answer(
             interaction,
 
-            "❌ Noch kein Zielkanal eingerichtet.\n"
+            "❌ Kein Zielkanal eingerichtet.\n"
             "Benutze zuerst `/setup`.",
 
             ephemeral=True
@@ -337,11 +429,8 @@ async def start(
         interaction,
 
         "▶️ **Tageszähler gestartet!**\n\n"
-
-        f"⏰ Zeit: **{configured_time()} Uhr**\n"
-
-        f"📅 Nächster Tag: **Tag {config['day']}**\n"
-
+        f"⏰ Zeiten: **{format_times()} Uhr**\n"
+        f"📅 Nächster Tag: **{config['day']}**\n"
         f"📍 Kanal: <#{config['channel_id']}>"
     )
 
@@ -393,7 +482,7 @@ async def pause(
         await answer(
             interaction,
 
-            "❌ Der Tageszähler läuft gerade nicht.",
+            "❌ Der Tageszähler läuft nicht.",
 
             ephemeral=True
         )
@@ -417,7 +506,7 @@ async def pause(
 
 @tree.command(
     name="resume",
-    description="Setzt den pausierten Tageszähler fort."
+    description="Setzt den Tageszähler fort."
 )
 @app_commands.checks.has_permissions(
     manage_guild=True
@@ -456,65 +545,50 @@ async def resume(
 
 @tree.command(
     name="settime",
-    description="Setzt die tägliche Uhrzeit."
+    description="Setzt eine oder mehrere tägliche Uhrzeiten."
 )
 @app_commands.describe(
-    uhrzeit="Format HH:MM, zum Beispiel 18:30"
+    uhrzeiten="Zum Beispiel 12:00,18:00,21:00"
 )
 @app_commands.checks.has_permissions(
     manage_guild=True
 )
 async def settime(
     interaction: discord.Interaction,
-    uhrzeit: str
+    uhrzeiten: str
 ):
 
-    try:
+    times = parse_times(
+        uhrzeiten
+    )
 
-        parts = uhrzeit.strip().split(":")
-
-        if len(parts) != 2:
-
-            raise ValueError
-
-        hour = int(parts[0])
-        minute = int(parts[1])
-
-        if not 0 <= hour <= 23:
-
-            raise ValueError
-
-        if not 0 <= minute <= 59:
-
-            raise ValueError
-
-    except ValueError:
+    if times is None:
 
         await answer(
             interaction,
 
             "❌ Ungültige Uhrzeit.\n\n"
-            "Beispiel:\n"
-            "`/settime 18:30`",
+            "Beispiele:\n"
+            "`/settime 12:00`\n"
+            "`/settime 12:00,18:00`\n"
+            "`/settime 12:00,18:00,21:00`",
 
             ephemeral=True
         )
 
         return
 
-    config["hour"] = hour
-    config["minute"] = minute
+    config["times"] = times
 
     save_config()
 
     await answer(
         interaction,
 
-        f"⏰ **Uhrzeit gespeichert: "
-        f"{hour:02d}:{minute:02d} Uhr**\n\n"
-
-        "Die Einstellung bleibt auch nach "
-        "einem Neustart erhalten."
+        "⏰ **Uhrzeiten gespeichert!**\n\n"
+        f"📅 Zeiten: **{', '.join(times)} Uhr**\n\n"
+        "Der Zähler kann jetzt mehrmals am selben "
+        "Tag ausgeführt werden."
     )
 
 
@@ -524,10 +598,10 @@ async def settime(
 
 @tree.command(
     name="setday",
-    description="Setzt den nächsten zu sendenden Tag."
+    description="Setzt den nächsten Tag."
 )
 @app_commands.describe(
-    tag="Zum Beispiel 1"
+    tag="Zum Beispiel 1 oder 100"
 )
 @app_commands.checks.has_permissions(
     manage_guild=True
@@ -566,7 +640,7 @@ async def setday(
 
 @tree.command(
     name="add",
-    description="Setzt die Schrittweite des Tageszählers."
+    description="Setzt die Schrittweite."
 )
 @app_commands.describe(
     schritt="Zum Beispiel 1 oder 2"
@@ -599,7 +673,7 @@ async def add(
     await answer(
         interaction,
 
-        f"➕ **Schrittweite gespeichert: +{schritt}**"
+        f"➕ **Schrittweite: +{schritt}**"
     )
 
 
@@ -636,33 +710,34 @@ async def channel(
 
 @tree.command(
     name="status",
-    description="Zeigt alle Einstellungen des Tageszählers."
+    description="Zeigt den Status des Tageszählers."
 )
 async def status(
     interaction: discord.Interaction
 ):
 
-    channel_id = config.get("channel_id")
+    channel_id = config.get(
+        "channel_id"
+    )
 
     if channel_id:
-
         channel_text = f"<#{channel_id}>"
-
     else:
-
         channel_text = "Nicht eingerichtet"
 
     if not config["running"]:
-
         state = "⏹️ Gestoppt"
 
     elif config["paused"]:
-
         state = "⏸️ Pausiert"
 
     else:
-
         state = "▶️ Läuft"
+
+    sent_slots = config.get(
+        "sent_slots",
+        []
+    )
 
     await answer(
         interaction,
@@ -670,20 +745,12 @@ async def status(
         "📊 **TAGESZÄHLER STATUS**\n\n"
 
         f"Status: **{state}**\n"
-
         f"Kanal: {channel_text}\n"
-
-        f"Uhrzeit: **{configured_time()} Uhr**\n"
-
+        f"Zeiten: **{format_times()} Uhr**\n"
         f"Nächster Tag: **{config['day']}**\n"
-
         f"Schrittweite: **+{config['increment']}**\n"
-
-        f"Letzte Nachricht: "
-        f"**{config['last_run'] or 'Noch keine'}**\n"
-
-        "Zeitzone: **Europe/Berlin**\n"
-
+        f"Ausgeführte Slots: **{len(sent_slots)}**\n"
+        f"Zeitzone: **Europe/Berlin**\n"
         f"Aktuelle Bot-Zeit: **{current_time()} Uhr**"
     )
 
@@ -694,7 +761,7 @@ async def status(
 
 @tree.command(
     name="reset",
-    description="Setzt alle Einstellungen zurück."
+    description="Setzt den Tageszähler komplett zurück."
 )
 @app_commands.checks.has_permissions(
     manage_guild=True
@@ -714,9 +781,7 @@ async def reset(
     await answer(
         interaction,
 
-        "♻️ **Alle Einstellungen wurden "
-        "zurückgesetzt.**\n\n"
-
+        "♻️ **Tageszähler zurückgesetzt.**\n\n"
         "Benutze danach `/setup`."
     )
 
@@ -727,7 +792,7 @@ async def reset(
 
 @tree.command(
     name="test",
-    description="Sendet sofort eine Testnachricht in den Zielkanal."
+    description="Sendet sofort eine Testnachricht."
 )
 @app_commands.checks.has_permissions(
     manage_guild=True
@@ -755,7 +820,7 @@ async def test(
 
         await target.send(
             "🧪 **Testnachricht erfolgreich!**\n"
-            "Der Bot kann Nachrichten in diesen Kanal senden."
+            "Der Tageszähler kann in diesen Kanal schreiben."
         )
 
         await answer(
@@ -770,8 +835,8 @@ async def test(
         await answer(
             interaction,
 
-            "❌ Der Bot hat keine Berechtigung, "
-            "in diesem Kanal zu schreiben.",
+            "❌ Der Bot darf in diesem Kanal "
+            "keine Nachrichten senden.",
 
             ephemeral=True
         )
@@ -779,7 +844,7 @@ async def test(
     except discord.HTTPException as error:
 
         print(
-            f"Testnachricht Discord-Fehler: {error}"
+            f"Discord-Fehler bei Test: {error}"
         )
 
         await answer(
@@ -802,15 +867,25 @@ async def command_error(
     error: app_commands.AppCommandError
 ):
 
-    print("=" * 50)
-    print("SLASH-COMMAND-FEHLER")
+    print(
+        "=" * 50
+    )
+
+    print(
+        "SLASH-COMMAND-FEHLER"
+    )
+
     print(
         f"Typ: {type(error).__name__}"
     )
+
     print(
         f"Fehler: {error}"
     )
-    print("=" * 50)
+
+    print(
+        "=" * 50
+    )
 
     if isinstance(
         error,
@@ -822,22 +897,11 @@ async def command_error(
             "**Server verwalten**."
         )
 
-    elif isinstance(
-        error,
-        app_commands.errors.CommandNotFound
-    ):
-
-        message = (
-            "⚠️ Discord verwendet noch eine alte "
-            "Command-Registrierung.\n"
-            "Bitte Discord komplett neu laden."
-        )
-
     else:
 
         message = (
-            "❌ Beim Ausführen dieses Befehls ist "
-            "ein Fehler aufgetreten."
+            "❌ Beim Ausführen dieses Befehls "
+            "ist ein Fehler aufgetreten."
         )
 
     await answer(
@@ -848,170 +912,23 @@ async def command_error(
 
 
 # ============================================================
-# COMMAND-SYNCHRONISIERUNG
-# ============================================================
-
-async def synchronize_commands():
-
-    print()
-    print("=" * 55)
-    print("SLASH-COMMAND-SYNCHRONISIERUNG")
-    print("=" * 55)
-
-    local_commands = list(
-        tree.get_commands()
-    )
-
-    print(
-        f"Aktuelle lokale Commands: "
-        f"{len(local_commands)}"
-    )
-
-    for command in local_commands:
-
-        print(
-            f"  /{command.name}"
-        )
-
-    # --------------------------------------------------------
-    # APPLICATION ID
-    # --------------------------------------------------------
-
-    try:
-
-        app_info = await bot.application_info()
-
-        print()
-        print(
-            f"BOT USER: {app_info.name}"
-        )
-
-        print(
-            f"BOT USER ID: {app_info.id}"
-        )
-
-        print(
-            f"APPLICATION ID: {app_info.id}"
-        )
-
-    except Exception as error:
-
-        print(
-            "Application-Info konnte nicht "
-            f"geladen werden: {error}"
-        )
-
-    # --------------------------------------------------------
-    # ALTE GLOBALE COMMANDS LÖSCHEN
-    # --------------------------------------------------------
-
-    try:
-
-        tree.clear_commands(
-            guild=None
-        )
-
-        await tree.sync()
-
-        print(
-            "Alte globale Commands dieses "
-            "Bots wurden entfernt."
-        )
-
-    except Exception as error:
-
-        print(
-            "Fehler beim Entfernen globaler "
-            f"Commands: {error}"
-        )
-
-    # --------------------------------------------------------
-    # LOKALE COMMANDS WIEDERHERSTELLEN
-    # --------------------------------------------------------
-
-    for command in local_commands:
-
-        tree.add_command(
-            command,
-            override=True
-        )
-
-    # --------------------------------------------------------
-    # ALTE GUILD COMMANDS LÖSCHEN
-    # --------------------------------------------------------
-
-    try:
-
-        tree.clear_commands(
-            guild=GUILD
-        )
-
-        await tree.sync(
-            guild=GUILD
-        )
-
-        print(
-            f"Alte Guild-Commands für "
-            f"{GUILD_ID} wurden entfernt."
-        )
-
-    except Exception as error:
-
-        print(
-            "Fehler beim Entfernen der "
-            f"Guild-Commands: {error}"
-        )
-
-    # --------------------------------------------------------
-    # AKTUELLE COMMANDS AUF SERVER KOPIEREN
-    # --------------------------------------------------------
-
-    tree.copy_global_to(
-        guild=GUILD
-    )
-
-    synced = await tree.sync(
-        guild=GUILD
-    )
-
-    print()
-    print(
-        f"{len(synced)} Slash-Befehle "
-        f"für Server {GUILD_ID} synchronisiert:"
-    )
-
-    for command in synced:
-
-        print(
-            f"  /{command.name}"
-        )
-
-    print(
-        "=" * 55
-    )
-
-    print()
-
-
-# ============================================================
 # READY
 # ============================================================
 
 @bot.event
 async def on_ready():
 
-    print("----------------------------------------")
+    print()
+    print(
+        "=" * 55
+    )
 
     print(
-        f"{bot.user} ist online!"
+        f"🤖 {bot.user} ist online!"
     )
 
     print(
         f"Bot-ID: {bot.user.id}"
-    )
-
-    print(
-        f"Application-ID: {bot.application_id}"
     )
 
     print(
@@ -1026,7 +943,13 @@ async def on_ready():
         f"Aktuelle Zeit: {current_time()} Uhr"
     )
 
-    print("----------------------------------------")
+    print(
+        f"Eingestellte Zeiten: {format_times()}"
+    )
+
+    print(
+        "=" * 55
+    )
 
 
 # ============================================================
@@ -1038,7 +961,7 @@ async def daily_counter():
     await bot.wait_until_ready()
 
     print(
-        "Tageszähler-Task gestartet."
+        "📅 Tageszähler-Task gestartet."
     )
 
     while not bot.is_closed():
@@ -1047,61 +970,80 @@ async def daily_counter():
 
             current = now()
 
-            # ------------------------------------------------
-            # AKTUELLE MINUTE
-            # ------------------------------------------------
+            current_date = current.strftime(
+                "%Y-%m-%d"
+            )
 
-            current_key = current.strftime(
-                "%Y-%m-%d %H:%M"
+            current_clock = current.strftime(
+                "%H:%M"
+            )
+
+            current_slot = (
+                f"{current_date} "
+                f"{current_clock}"
             )
 
             # ------------------------------------------------
-            # AKTUELLE UHRZEIT ALS MINUTEN
+            # ALTE SLOTS AUFRÄUMEN
             # ------------------------------------------------
 
-            current_minutes = (
-                current.hour * 60
-                + current.minute
+            sent_slots = config.get(
+                "sent_slots",
+                []
             )
 
+            # Nur die letzten 100 Slots behalten
+            if len(sent_slots) > 100:
+
+                config["sent_slots"] = (
+                    sent_slots[-100:]
+                )
+
+                save_config()
+
             # ------------------------------------------------
-            # EINGESTELLTE UHRZEIT
+            # GRUNDPRÜFUNGEN
             # ------------------------------------------------
 
-            target_minutes = (
-                int(config["hour"]) * 60
-                + int(config["minute"])
-            )
+            if not config.get("running"):
+
+                await asyncio.sleep(5)
+                continue
+
+            if config.get("paused"):
+
+                await asyncio.sleep(5)
+                continue
+
+            if not config.get("channel_id"):
+
+                await asyncio.sleep(5)
+                continue
 
             # ------------------------------------------------
-            # PRÜFEN
+            # ALLE EINGESTELLTEN ZEITEN PRÜFEN
             # ------------------------------------------------
 
-            should_send = (
+            for scheduled_time in get_times():
 
-                config["running"]
+                if scheduled_time != current_clock:
+                    continue
 
-                and not config["paused"]
-
-                and config.get("channel_id")
-
-                # Wichtig:
-                # Nicht dieselbe Minute zweimal senden.
-                and config.get("last_run")
-                != current_key
-
-                # Sobald die eingestellte Uhrzeit
-                # erreicht wurde, darf gesendet werden.
-                and current_minutes
-                >= target_minutes
-            )
-
-            if should_send:
+                # Diese Kombination aus Datum + Uhrzeit
+                # wurde bereits ausgeführt.
+                if current_slot in config.get(
+                    "sent_slots",
+                    []
+                ):
+                    continue
 
                 print()
-                print("----------------------------------------")
                 print(
-                    "TAGESNACHRICHT WIRD GESENDET"
+                    "----------------------------------------"
+                )
+
+                print(
+                    "📅 TAGESNACHRICHT WIRD GESENDET"
                 )
 
                 print(
@@ -1110,79 +1052,94 @@ async def daily_counter():
                 )
 
                 print(
-                    f"Tag: {config['day']}"
+                    f"Geplante Zeit: {scheduled_time}"
+                )
+
+                print(
+                    f"Aktueller Tag: {config['day']}"
                 )
 
                 print(
                     f"Kanal: {config['channel_id']}"
                 )
 
-                print("----------------------------------------")
+                print(
+                    "----------------------------------------"
+                )
 
                 target = await get_target_channel()
 
-                if target is not None:
-
-                    try:
-
-                        day = int(
-                            config["day"]
-                        )
-
-                        # ------------------------------------------------
-                        # NACHRICHT SENDEN
-                        # ------------------------------------------------
-
-                        await target.send(
-                            f"📅 **Tag {day}**"
-                        )
-
-                        # ------------------------------------------------
-                        # NÄCHSTEN TAG BERECHNEN
-                        # ------------------------------------------------
-
-                        config["day"] = (
-                            day
-                            + int(config["increment"])
-                        )
-
-                        # ------------------------------------------------
-                        # ZEITPUNKT SPEICHERN
-                        # ------------------------------------------------
-
-                        config["last_run"] = (
-                            current_key
-                        )
-
-                        save_config()
-
-                        print(
-                            f"✅ Tag {day} "
-                            "erfolgreich gesendet."
-                        )
-
-                        print(
-                            f"➡️ Nächster Tag: "
-                            f"{config['day']}"
-                        )
-
-                    except discord.Forbidden:
-
-                        print(
-                            "❌ Keine Berechtigung "
-                            "zum Schreiben im Kanal."
-                        )
-
-                    except discord.HTTPException as error:
-
-                        print(
-                            f"❌ Discord-Fehler: {error}"
-                        )
-
-                else:
+                if target is None:
 
                     print(
-                        "❌ Zielkanal nicht gefunden."
+                        "❌ Zielkanal wurde nicht gefunden."
+                    )
+
+                    continue
+
+                try:
+
+                    day = int(
+                        config["day"]
+                    )
+
+                    # ----------------------------------------
+                    # NACHRICHT SENDEN
+                    # ----------------------------------------
+
+                    await target.send(
+                        f"📅 **Tag {day}**"
+                    )
+
+                    # ----------------------------------------
+                    # TAG ERHÖHEN
+                    # ----------------------------------------
+
+                    config["day"] = (
+                        day
+                        + int(config["increment"])
+                    )
+
+                    # ----------------------------------------
+                    # SLOT ALS AUSGEFÜHRT MARKIEREN
+                    # ----------------------------------------
+
+                    if current_slot not in config[
+                        "sent_slots"
+                    ]:
+
+                        config[
+                            "sent_slots"
+                        ].append(
+                            current_slot
+                        )
+
+                    save_config()
+
+                    print(
+                        f"✅ Tag {day} erfolgreich gesendet."
+                    )
+
+                    print(
+                        f"➡️ Nächster Tag: "
+                        f"{config['day']}"
+                    )
+
+                    print(
+                        f"➡️ Slot: {current_slot}"
+                    )
+
+                except discord.Forbidden:
+
+                    print(
+                        "❌ Keine Berechtigung "
+                        "zum Schreiben im Zielkanal."
+                    )
+
+                except discord.HTTPException as error:
+
+                    print(
+                        f"❌ Discord-Fehler: {error}"
                     )
 
             # ------------------------------------------------
@@ -1194,7 +1151,7 @@ async def daily_counter():
         except asyncio.CancelledError:
 
             print(
-                "Tageszähler-Task beendet."
+                "📅 Tageszähler-Task beendet."
             )
 
             break
@@ -1202,8 +1159,10 @@ async def daily_counter():
         except Exception as error:
 
             print(
-                f"FEHLER IM TAGESZÄHLER: {error}"
+                "❌ FEHLER IM TAGESZÄHLER:"
             )
+
+            print(error)
 
             await asyncio.sleep(10)
 
@@ -1227,21 +1186,21 @@ async def on_connect():
         )
 
         print(
-            "Tageszähler-Task wurde gestartet."
+            "📅 Tageszähler-Task wurde gestartet."
         )
 
 
 # ============================================================
-# START
+# BOT STARTEN
 # ============================================================
 
 print()
 print(
-    "Bot wird gestartet..."
+    "🤖 Bot wird gestartet..."
 )
+
 print(
     "=" * 40
 )
 
 bot.run(TOKEN)
-```
