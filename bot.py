@@ -1,7 +1,7 @@
 import os
 import json
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import discord
@@ -18,7 +18,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise RuntimeError(
         "DISCORD_TOKEN wurde nicht gefunden. "
-        "Setze die Umgebungsvariable DISCORD_TOKEN in Railway."
+        "Setze die Variable in Railway."
     )
 
 
@@ -38,7 +38,7 @@ TIMEZONE = ZoneInfo("Europe/Berlin")
 
 
 # =========================================================
-# CONFIG-DATEI
+# KONFIGURATION
 # =========================================================
 
 CONFIG_FILE = Path("config.json")
@@ -56,15 +56,8 @@ DEFAULT_CONFIG = {
 
 
 def load_config():
-    """
-    Lädt die gespeicherte Konfiguration.
-
-    Falls keine Datei existiert oder sie beschädigt ist,
-    werden die Standardwerte verwendet.
-    """
-
     if not CONFIG_FILE.exists():
-        print("Keine config.json gefunden. Standardwerte werden verwendet.")
+        print("Keine config.json vorhanden. Standardwerte werden verwendet.")
         return DEFAULT_CONFIG.copy()
 
     try:
@@ -72,9 +65,8 @@ def load_config():
             data = json.load(file)
 
         if not isinstance(data, dict):
-            raise ValueError("config.json enthält kein Objekt.")
+            raise ValueError("config.json ist ungültig.")
 
-        # Fehlende Werte ergänzen
         for key, value in DEFAULT_CONFIG.items():
             if key not in data:
                 data[key] = value
@@ -83,8 +75,6 @@ def load_config():
 
     except Exception as error:
         print(f"Fehler beim Laden von config.json: {error}")
-        print("Standardwerte werden verwendet.")
-
         return DEFAULT_CONFIG.copy()
 
 
@@ -92,10 +82,6 @@ config = load_config()
 
 
 def save_config():
-    """
-    Speichert die aktuelle Konfiguration.
-    """
-
     try:
         with open(CONFIG_FILE, "w", encoding="utf-8") as file:
             json.dump(config, file, indent=4)
@@ -105,7 +91,7 @@ def save_config():
 
 
 # =========================================================
-# DISCORD CLIENT
+# DISCORD
 # =========================================================
 
 intents = discord.Intents.default()
@@ -118,71 +104,37 @@ tree = app_commands.CommandTree(bot)
 # HILFSFUNKTIONEN
 # =========================================================
 
-def current_time():
-    """
-    Gibt die aktuelle Zeit in Europe/Berlin zurück.
-    """
-
+def now_berlin():
     return datetime.now(TIMEZONE)
 
 
-def today_string():
-    """
-    Gibt das heutige Datum als YYYY-MM-DD zurück.
-    """
-
-    return current_time().strftime("%Y-%m-%d")
-
-
-def configured_time():
-    """
-    Gibt die konfigurierte Uhrzeit zurück.
-    """
-
-    return (
-        config["hour"],
-        config["minute"]
-    )
+def today():
+    return now_berlin().strftime("%Y-%m-%d")
 
 
 async def get_counter_channel():
-    """
-    Holt den konfigurierten Discord-Kanal.
-
-    Zuerst wird der lokale Cache geprüft.
-    Falls der Kanal dort nicht vorhanden ist,
-    wird versucht, ihn direkt von Discord abzurufen.
-    """
-
     channel_id = config.get("channel_id")
 
     if channel_id is None:
         return None
 
+    # Erst Cache versuchen
     channel = bot.get_channel(channel_id)
 
     if channel is not None:
         return channel
 
+    # Falls nicht im Cache, direkt von Discord holen
     try:
-        channel = await bot.fetch_channel(channel_id)
-        return channel
+        return await bot.fetch_channel(channel_id)
 
     except Exception as error:
-        print(
-            f"Zähler-Kanal {channel_id} konnte nicht geladen werden: "
-            f"{error}"
-        )
-
+        print(f"Zähler-Kanal konnte nicht geladen werden: {error}")
         return None
 
 
-def get_today_target_time():
-    """
-    Erstellt den heutigen Zeitpunkt, an dem gezählt werden soll.
-    """
-
-    now = current_time()
+def get_target_time():
+    now = now_berlin()
 
     return now.replace(
         hour=config["hour"],
@@ -193,16 +145,64 @@ def get_today_target_time():
 
 
 # =========================================================
-# BOT SETUP
+# SLASH-COMMANDS SAUBER SYNCHRONISIEREN
 # =========================================================
 
-async def sync_commands():
-    """
-    Synchronisiert die Slash-Commands ausschließlich
-    mit unserem Server.
-    """
+async def sync_commands_clean():
+
+    print("========================================")
+    print("SLASH-COMMAND-SYNCHRONISIERUNG")
+    print("========================================")
 
     try:
+
+        # Aktuelle lokale Guild-Commands merken
+        current_commands = tree.get_commands(guild=GUILD)
+
+        print(
+            f"Aktuelle lokale Commands: "
+            f"{len(current_commands)}"
+        )
+
+        for command in current_commands:
+            print(f"  /{command.name}")
+
+        # -------------------------------------------------
+        # 1. Lokale Guild-Commands entfernen
+        # -------------------------------------------------
+
+        tree.clear_commands(guild=GUILD)
+
+        print("Lokale Guild-Commands entfernt.")
+
+        # -------------------------------------------------
+        # 2. Discord ebenfalls leeren
+        # -------------------------------------------------
+
+        cleared = await tree.sync(guild=GUILD)
+
+        print(
+            f"Discord-Guild-Commands geleert: "
+            f"{len(cleared)}"
+        )
+
+        # -------------------------------------------------
+        # 3. Aktuelle Commands wieder hinzufügen
+        # -------------------------------------------------
+
+        for command in current_commands:
+            tree.add_command(
+                command,
+                guild=GUILD,
+                override=True
+            )
+
+        print("Aktuelle Commands wieder hinzugefügt.")
+
+        # -------------------------------------------------
+        # 4. Neue Commands synchronisieren
+        # -------------------------------------------------
+
         synced = await tree.sync(guild=GUILD)
 
         print(
@@ -210,11 +210,29 @@ async def sync_commands():
             f"für Server {GUILD_ID} synchronisiert."
         )
 
+        print("Aktuelle Commands:")
+
         for command in synced:
             print(f"  /{command.name}")
 
+        print("========================================")
+
     except Exception as error:
-        print(f"Fehler beim Synchronisieren: {error}")
+
+        print("FEHLER BEI DER COMMAND-SYNCHRONISIERUNG")
+        print(f"Typ: {type(error).__name__}")
+        print(f"Fehler: {error}")
+        print("========================================")
+
+
+# =========================================================
+# BOT START
+# =========================================================
+
+@bot.event
+async def setup_hook():
+
+    await sync_commands_clean()
 
 
 @bot.event
@@ -229,12 +247,6 @@ async def on_ready():
         counter_loop.start()
 
 
-@bot.event
-async def setup_hook():
-
-    await sync_commands()
-
-
 # =========================================================
 # TÄGLICHER ZÄHLER
 # =========================================================
@@ -242,35 +254,34 @@ async def setup_hook():
 @tasks.loop(seconds=15)
 async def counter_loop():
 
-    # Zähler läuft nicht
+    # Nicht gestartet
     if not config["running"]:
         return
 
-    # Zähler wurde pausiert
+    # Pausiert
     if config["paused"]:
         return
 
-    now = current_time()
+    now = now_berlin()
 
-    today = now.strftime("%Y-%m-%d")
+    today_date = now.strftime("%Y-%m-%d")
 
-    target_time = get_today_target_time()
+    target = get_target_time()
 
-    # Die eingestellte Uhrzeit wurde heute
-    # noch nicht erreicht.
-    if now < target_time:
+    # Uhrzeit noch nicht erreicht
+    if now < target:
         return
 
-    # Heute wurde bereits gezählt.
-    if config["last_run"] == today:
+    # Heute bereits ausgeführt
+    if config["last_run"] == today_date:
         return
 
     channel = await get_counter_channel()
 
     if channel is None:
         print(
-            "Zähler konnte nicht ausgeführt werden: "
-            "Kein gültiger Kanal festgelegt."
+            "Zähler kann nicht ausgeführt werden: "
+            "Kein Kanal festgelegt."
         )
         return
 
@@ -282,36 +293,37 @@ async def counter_loop():
             f"📅 **Tag {current_day}**"
         )
 
-        # Erst NACH erfolgreichem Senden speichern.
+        # Nur nach erfolgreichem Senden erhöhen
         config["day"] += config["increment"]
-        config["last_run"] = today
+        config["last_run"] = today_date
 
         save_config()
 
         print(
             f"Zähler ausgeführt: "
             f"Tag {current_day} | "
-            f"Datum {today} | "
-            f"Zeit {now.strftime('%H:%M:%S')}"
+            f"{today_date} | "
+            f"{now.strftime('%H:%M:%S')}"
         )
 
     except discord.Forbidden:
 
         print(
-            "FEHLER: Der Bot darf in den Zähler-Kanal "
-            "nicht schreiben."
+            "❌ Der Bot hat keine Berechtigung, "
+            "in den Zähler-Kanal zu schreiben."
         )
 
     except discord.NotFound:
 
         print(
-            "FEHLER: Der Zähler-Kanal existiert nicht mehr."
+            "❌ Der Zähler-Kanal wurde nicht gefunden."
         )
 
     except Exception as error:
 
         print(
-            f"Fehler beim Senden des Zählers: {error}"
+            f"❌ Fehler beim Senden: "
+            f"{type(error).__name__}: {error}"
         )
 
 
@@ -372,19 +384,8 @@ async def start(interaction: discord.Interaction):
         )
         return
 
-    now = current_time()
-    target = get_today_target_time()
-    today = today_string()
-
     config["running"] = True
     config["paused"] = False
-
-    # Wenn der Bot erst NACH der heutigen Zählzeit
-    # gestartet wird, zählt er nicht sofort.
-    #
-    # Der nächste Lauf ist dann morgen.
-    if now >= target and config["last_run"] != today:
-        config["last_run"] = today
 
     save_config()
 
@@ -495,15 +496,18 @@ async def settime(
         hour = int(parts[0])
         minute = int(parts[1])
 
-        if not (0 <= hour <= 23):
+        if hour < 0 or hour > 23:
             raise ValueError
 
-        if not (0 <= minute <= 59):
+        if minute < 0 or minute > 59:
             raise ValueError
 
         config["hour"] = hour
         config["minute"] = minute
 
+        # Wichtig:
+        # Die Uhrzeitänderung soll gespeichert werden,
+        # ohne den Zähler zurückzusetzen.
         save_config()
 
         await interaction.response.send_message(
@@ -515,7 +519,8 @@ async def settime(
 
         await interaction.response.send_message(
             "❌ **Falsches Format.**\n"
-            "Benutze zum Beispiel: `/settime 18:30`"
+            "Benutze zum Beispiel:\n"
+            "`/settime 18:30`"
         )
 
 
@@ -642,8 +647,7 @@ async def status(interaction: discord.Interaction):
 
     channel_obj = await get_counter_channel()
 
-    if channel_obj:
-
+    if channel_obj is not None:
         channel_text = channel_obj.mention
 
     await interaction.response.send_message(
@@ -701,18 +705,17 @@ async def on_app_command_error(
 
     print("----------------------------------------")
     print("SLASH-COMMAND-FEHLER")
-    print(f"Fehlertyp: {type(error).__name__}")
+    print(f"Typ: {type(error).__name__}")
     print(f"Fehler: {error}")
 
-    original_error = getattr(error, "original", None)
+    original = getattr(error, "original", None)
 
-    if original_error is not None:
-        print(f"Ursprünglicher Fehler: {type(original_error).__name__}")
-        print(f"Details: {original_error}")
+    if original is not None:
+        print(f"Original-Typ: {type(original).__name__}")
+        print(f"Original-Fehler: {original}")
 
     print("----------------------------------------")
 
-    # Keine Berechtigung
     if isinstance(
         error,
         app_commands.errors.MissingPermissions
@@ -723,24 +726,10 @@ async def on_app_command_error(
             "**Server verwalten**."
         )
 
-    # Command wurde von Discord geschickt,
-    # ist aber lokal nicht vorhanden.
-    elif isinstance(
-        error,
-        app_commands.errors.CommandNotFound
-    ):
-
-        message = (
-            "❌ Dieser Slash-Befehl ist veraltet. "
-            "Bitte Discord einmal komplett neu laden "
-            "und den Befehl erneut auswählen."
-        )
-
     else:
 
         message = (
-            "❌ Bei dem Befehl ist ein Fehler aufgetreten.\n"
-            "Schau bitte in die Railway-Logs."
+            "❌ Bei diesem Befehl ist ein Fehler aufgetreten."
         )
 
     try:
