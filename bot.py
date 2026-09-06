@@ -23,6 +23,14 @@ if not TOKEN:
 
 
 # =========================================================
+# SERVER
+# =========================================================
+
+GUILD_ID = 1533811509678047352
+GUILD = discord.Object(id=GUILD_ID)
+
+
+# =========================================================
 # ZEITZONE
 # =========================================================
 
@@ -110,8 +118,12 @@ async def on_ready():
     print(f"{bot.user} ist online!")
 
     try:
-        synced = await tree.sync()
-        print(f"{len(synced)} Slash-Befehle synchronisiert.")
+        synced = await tree.sync(guild=GUILD)
+        print(
+            f"{len(synced)} Slash-Befehle "
+            f"für Server {GUILD_ID} synchronisiert."
+        )
+
     except Exception as error:
         print(f"Fehler beim Synchronisieren: {error}")
 
@@ -148,7 +160,7 @@ async def counter_loop():
         microsecond=0
     )
 
-    # Noch nicht die eingestellte Uhrzeit
+    # Die eingestellte Uhrzeit wurde noch nicht erreicht
     if now < target_time:
         return
 
@@ -184,7 +196,8 @@ async def counter_loop():
 
 @tree.command(
     name="setup",
-    description="Richtet den täglichen Zähler in diesem Kanal ein."
+    description="Richtet den täglichen Zähler in diesem Kanal ein.",
+    guild=GUILD
 )
 @app_commands.checks.has_permissions(manage_guild=True)
 async def setup(interaction: discord.Interaction):
@@ -193,9 +206,7 @@ async def setup(interaction: discord.Interaction):
     config["running"] = False
     config["paused"] = False
 
-    # WICHTIG:
     # Die eingestellte Uhrzeit bleibt erhalten!
-    # Sie wird NICHT mehr auf 12:00 zurückgesetzt.
 
     config["day"] = 1
     config["increment"] = 1
@@ -220,7 +231,8 @@ async def setup(interaction: discord.Interaction):
 
 @tree.command(
     name="start",
-    description="Startet den täglichen Zähler."
+    description="Startet den täglichen Zähler.",
+    guild=GUILD
 )
 @app_commands.checks.has_permissions(manage_guild=True)
 async def start(interaction: discord.Interaction):
@@ -243,7 +255,8 @@ async def start(interaction: discord.Interaction):
 
 @tree.command(
     name="stop",
-    description="Stoppt den täglichen Zähler."
+    description="Stoppt den täglichen Zähler.",
+    guild=GUILD
 )
 @app_commands.checks.has_permissions(manage_guild=True)
 async def stop(interaction: discord.Interaction):
@@ -263,7 +276,8 @@ async def stop(interaction: discord.Interaction):
 
 @tree.command(
     name="pause",
-    description="Pausiert den täglichen Zähler."
+    description="Pausiert den täglichen Zähler.",
+    guild=GUILD
 )
 @app_commands.checks.has_permissions(manage_guild=True)
 async def pause(interaction: discord.Interaction):
@@ -283,7 +297,8 @@ async def pause(interaction: discord.Interaction):
 
 @tree.command(
     name="resume",
-    description="Setzt den Zähler fort."
+    description="Setzt den Zähler fort.",
+    guild=GUILD
 )
 @app_commands.checks.has_permissions(manage_guild=True)
 async def resume(interaction: discord.Interaction):
@@ -304,7 +319,8 @@ async def resume(interaction: discord.Interaction):
 
 @tree.command(
     name="time",
-    description="Ändert die tägliche Zählzeit."
+    description="Ändert die tägliche Zählzeit.",
+    guild=GUILD
 )
 @app_commands.describe(
     new_time="Uhrzeit im Format HH:MM, z.B. 18:30"
@@ -325,13 +341,6 @@ async def time_command(
         config["hour"] = hour
         config["minute"] = minute
 
-        # Wenn die Zeit geändert wird, wird für heute
-        # nicht automatisch sofort gezählt.
-        now = current_time()
-        today = now.strftime("%Y-%m-%d")
-
-        config["last_run"] = today
-
         save_config()
 
         await interaction.response.send_message(
@@ -343,7 +352,7 @@ async def time_command(
 
         await interaction.response.send_message(
             "❌ Falsches Format.\n"
-            "Benutze zum Beispiel: `/time 18:30`"
+            "Benutze zum Beispiel `/time 18:30`"
         )
 
 
@@ -353,7 +362,8 @@ async def time_command(
 
 @tree.command(
     name="setday",
-    description="Setzt den aktuellen Tag/Zählerwert."
+    description="Setzt den aktuellen Tag/Zählerwert.",
+    guild=GUILD
 )
 @app_commands.describe(
     number="Der neue Startwert"
@@ -386,7 +396,8 @@ async def setday(
 
 @tree.command(
     name="add",
-    description="Ändert die tägliche Erhöhung."
+    description="Ändert die tägliche Erhöhung.",
+    guild=GUILD
 )
 @app_commands.describe(
     number="Erhöhung, z.B. 1 oder 2"
@@ -419,7 +430,8 @@ async def add(
 
 @tree.command(
     name="channel",
-    description="Legt diesen Kanal als Zähler-Kanal fest."
+    description="Legt diesen Kanal als Zähler-Kanal fest.",
+    guild=GUILD
 )
 @app_commands.checks.has_permissions(manage_guild=True)
 async def channel(interaction: discord.Interaction):
@@ -440,7 +452,8 @@ async def channel(interaction: discord.Interaction):
 
 @tree.command(
     name="status",
-    description="Zeigt den aktuellen Zähler-Status."
+    description="Zeigt den aktuellen Zähler-Status.",
+    guild=GUILD
 )
 async def status(interaction: discord.Interaction):
 
@@ -478,7 +491,8 @@ async def status(interaction: discord.Interaction):
 
 @tree.command(
     name="reset",
-    description="Setzt den Zähler auf die Grundeinstellungen zurück."
+    description="Setzt den Zähler zurück.",
+    guild=GUILD
 )
 @app_commands.checks.has_permissions(manage_guild=True)
 async def reset(interaction: discord.Interaction):
