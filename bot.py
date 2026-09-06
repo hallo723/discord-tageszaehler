@@ -1,9 +1,13 @@
 import os
-import discord
-from discord.ext import commands, tasks
-from datetime import datetime
-from pathlib import Path
 import json
+from pathlib import Path
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import discord
+from discord.ext import tasks
+from discord import app_commands
+
 
 # =========================================================
 # DISCORD TOKEN
@@ -16,6 +20,14 @@ if not TOKEN:
         "DISCORD_TOKEN wurde nicht gefunden. "
         "Setze die Umgebungsvariable DISCORD_TOKEN."
     )
+
+
+# =========================================================
+# ZEITZONE
+# =========================================================
+
+TIMEZONE = ZoneInfo("Europe/Berlin")
+
 
 # =========================================================
 # DATEI FÜR DIE SPEICHERUNG
@@ -66,12 +78,26 @@ def save_config():
 # =========================================================
 
 intents = discord.Intents.default()
-intents.message_content = True
 
-bot = commands.Bot(
-    command_prefix="!",
-    intents=intents
-)
+bot = discord.Client(intents=intents)
+tree = app_commands.CommandTree(bot)
+
+
+# =========================================================
+# HILFSFUNKTIONEN
+# =========================================================
+
+def current_time():
+    return datetime.now(TIMEZONE)
+
+
+def get_channel():
+    channel_id = config.get("channel_id")
+
+    if channel_id is None:
+        return None
+
+    return bot.get_channel(channel_id)
 
 
 # =========================================================
@@ -80,7 +106,14 @@ bot = commands.Bot(
 
 @bot.event
 async def on_ready():
+
     print(f"{bot.user} ist online!")
+
+    try:
+        synced = await tree.sync()
+        print(f"{len(synced)} Slash-Befehle synchronisiert.")
+    except Exception as error:
+        print(f"Fehler beim Synchronisieren: {error}")
 
     if not counter_loop.is_running():
         counter_loop.start()
@@ -90,7 +123,7 @@ async def on_ready():
 # TÄGLICHER ZÄHLER
 # =========================================================
 
-@tasks.loop(seconds=30)
+@tasks.loop(seconds=15)
 async def counter_loop():
 
     if not config["running"]:
@@ -99,87 +132,105 @@ async def counter_loop():
     if config["paused"]:
         return
 
-    now = datetime.now()
+    channel = get_channel()
 
-    if now.hour != config["hour"]:
+    if channel is None:
         return
 
-    if now.minute != config["minute"]:
-        return
+    now = current_time()
 
     today = now.strftime("%Y-%m-%d")
 
+    target_time = now.replace(
+        hour=config["hour"],
+        minute=config["minute"],
+        second=0,
+        microsecond=0
+    )
+
+    # Noch nicht die eingestellte Uhrzeit
+    if now < target_time:
+        return
+
+    # Heute wurde bereits gezählt
     if config["last_run"] == today:
-        return
-
-    channel_id = config["channel_id"]
-
-    if channel_id is None:
-        return
-
-    channel = bot.get_channel(channel_id)
-
-    if channel is None:
         return
 
     current_day = config["day"]
 
     try:
-        await channel.send(f"📅 **Tag {current_day}**")
+
+        await channel.send(
+            f"📅 **Tag {current_day}**"
+        )
 
         config["day"] += config["increment"]
         config["last_run"] = today
 
         save_config()
 
+        print(
+            f"Zähler ausgeführt: Tag {current_day} "
+            f"am {today} um {now.strftime('%H:%M:%S')}"
+        )
+
     except Exception as error:
         print(f"Fehler beim Senden: {error}")
 
 
 # =========================================================
-# SETUP
+# /SETUP
 # =========================================================
 
-@bot.command()
-@commands.has_permissions(manage_guild=True)
-async def setup(ctx):
+@tree.command(
+    name="setup",
+    description="Richtet den täglichen Zähler in diesem Kanal ein."
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def setup(interaction: discord.Interaction):
 
-    config["channel_id"] = ctx.channel.id
+    config["channel_id"] = interaction.channel.id
     config["running"] = False
     config["paused"] = False
-    config["hour"] = 12
-    config["minute"] = 0
+
+    # WICHTIG:
+    # Die eingestellte Uhrzeit bleibt erhalten!
+    # Sie wird NICHT mehr auf 12:00 zurückgesetzt.
+
     config["day"] = 1
     config["increment"] = 1
     config["last_run"] = ""
 
     save_config()
 
-    await ctx.send(
+    await interaction.response.send_message(
         "⚙️ **Zähler eingerichtet!**\n\n"
-        f"📢 Kanal: {ctx.channel.mention}\n"
+        f"📢 Kanal: {interaction.channel.mention}\n"
         "🔢 Startwert: **1**\n"
         "📈 Erhöhung: **+1**\n"
-        "⏰ Uhrzeit: **12:00**\n"
+        f"⏰ Uhrzeit: **{config['hour']:02d}:{config['minute']:02d}**\n"
         "📅 Intervall: **jeden Tag**\n\n"
-        "Benutze `!start`, um den Zähler zu starten."
+        "Benutze `/start`, um den Zähler zu starten."
     )
 
 
 # =========================================================
-# START
+# /START
 # =========================================================
 
-@bot.command()
-@commands.has_permissions(manage_guild=True)
-async def start(ctx):
+@tree.command(
+    name="start",
+    description="Startet den täglichen Zähler."
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def start(interaction: discord.Interaction):
 
     config["running"] = True
     config["paused"] = False
 
     save_config()
 
-    await ctx.send(
+    await interaction.response.send_message(
         "🟢 **Zähler gestartet!**\n"
         f"⏰ Zählzeitpunkt: "
         f"**{config['hour']:02d}:{config['minute']:02d}**"
@@ -187,60 +238,85 @@ async def start(ctx):
 
 
 # =========================================================
-# STOP
+# /STOP
 # =========================================================
 
-@bot.command()
-@commands.has_permissions(manage_guild=True)
-async def stop(ctx):
+@tree.command(
+    name="stop",
+    description="Stoppt den täglichen Zähler."
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def stop(interaction: discord.Interaction):
 
     config["running"] = False
 
     save_config()
 
-    await ctx.send("🔴 **Zähler gestoppt.**")
+    await interaction.response.send_message(
+        "🔴 **Zähler gestoppt.**"
+    )
 
 
 # =========================================================
-# PAUSE
+# /PAUSE
 # =========================================================
 
-@bot.command()
-@commands.has_permissions(manage_guild=True)
-async def pause(ctx):
+@tree.command(
+    name="pause",
+    description="Pausiert den täglichen Zähler."
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def pause(interaction: discord.Interaction):
 
     config["paused"] = True
 
     save_config()
 
-    await ctx.send("⏸️ **Zähler pausiert.**")
+    await interaction.response.send_message(
+        "⏸️ **Zähler pausiert.**"
+    )
 
 
 # =========================================================
-# RESUME
+# /RESUME
 # =========================================================
 
-@bot.command()
-@commands.has_permissions(manage_guild=True)
-async def resume(ctx):
+@tree.command(
+    name="resume",
+    description="Setzt den Zähler fort."
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def resume(interaction: discord.Interaction):
 
     config["paused"] = False
     config["running"] = True
 
     save_config()
 
-    await ctx.send("▶️ **Zähler fortgesetzt.**")
+    await interaction.response.send_message(
+        "▶️ **Zähler fortgesetzt.**"
+    )
 
 
 # =========================================================
-# UHRZEIT ÄNDERN
+# /TIME
 # =========================================================
 
-@bot.command()
-@commands.has_permissions(manage_guild=True)
-async def time(ctx, new_time: str):
+@tree.command(
+    name="time",
+    description="Ändert die tägliche Zählzeit."
+)
+@app_commands.describe(
+    new_time="Uhrzeit im Format HH:MM, z.B. 18:30"
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def time_command(
+    interaction: discord.Interaction,
+    new_time: str
+):
 
     try:
+
         hour, minute = map(int, new_time.split(":"))
 
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
@@ -249,135 +325,179 @@ async def time(ctx, new_time: str):
         config["hour"] = hour
         config["minute"] = minute
 
+        # Wenn die Zeit geändert wird, wird für heute
+        # nicht automatisch sofort gezählt.
+        now = current_time()
+        today = now.strftime("%Y-%m-%d")
+
+        config["last_run"] = today
+
         save_config()
 
-        await ctx.send(
-            f"⏰ Uhrzeit geändert auf **{hour:02d}:{minute:02d}**."
+        await interaction.response.send_message(
+            f"⏰ **Uhrzeit geändert!**\n"
+            f"Neue Zählzeit: **{hour:02d}:{minute:02d}**"
         )
 
     except ValueError:
-        await ctx.send(
+
+        await interaction.response.send_message(
             "❌ Falsches Format.\n"
-            "Benutze z. B. `!time 18:30`"
+            "Benutze zum Beispiel: `/time 18:30`"
         )
 
 
 # =========================================================
-# TAG SETZEN
+# /SETDAY
 # =========================================================
 
-@bot.command()
-@commands.has_permissions(manage_guild=True)
-async def setday(ctx, number: int):
+@tree.command(
+    name="setday",
+    description="Setzt den aktuellen Tag/Zählerwert."
+)
+@app_commands.describe(
+    number="Der neue Startwert"
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def setday(
+    interaction: discord.Interaction,
+    number: int
+):
 
     if number < 0:
-        await ctx.send("❌ Die Zahl darf nicht negativ sein.")
+
+        await interaction.response.send_message(
+            "❌ Die Zahl darf nicht negativ sein."
+        )
         return
 
     config["day"] = number
 
     save_config()
 
-    await ctx.send(
+    await interaction.response.send_message(
         f"🔢 Der Zähler steht jetzt auf **Tag {number}**."
     )
 
 
 # =========================================================
-# ERHÖHUNG ÄNDERN
+# /ADD
 # =========================================================
 
-@bot.command()
-@commands.has_permissions(manage_guild=True)
-async def add(ctx, number: int):
+@tree.command(
+    name="add",
+    description="Ändert die tägliche Erhöhung."
+)
+@app_commands.describe(
+    number="Erhöhung, z.B. 1 oder 2"
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def add(
+    interaction: discord.Interaction,
+    number: int
+):
 
     if number == 0:
-        await ctx.send("❌ Die Erhöhung darf nicht 0 sein.")
+
+        await interaction.response.send_message(
+            "❌ Die Erhöhung darf nicht 0 sein."
+        )
         return
 
     config["increment"] = number
 
     save_config()
 
-    await ctx.send(
+    await interaction.response.send_message(
         f"📈 Die Erhöhung wurde auf **{number:+d}** gesetzt."
     )
 
 
 # =========================================================
-# KANAL SETZEN
+# /CHANNEL
 # =========================================================
 
-@bot.command()
-@commands.has_permissions(manage_guild=True)
-async def channel(ctx):
+@tree.command(
+    name="channel",
+    description="Legt diesen Kanal als Zähler-Kanal fest."
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def channel(interaction: discord.Interaction):
 
-    config["channel_id"] = ctx.channel.id
+    config["channel_id"] = interaction.channel.id
 
     save_config()
 
-    await ctx.send(
-        f"📢 Dieser Kanal ({ctx.channel.mention}) "
+    await interaction.response.send_message(
+        f"📢 Dieser Kanal ({interaction.channel.mention}) "
         "ist jetzt der Zähler-Kanal."
     )
 
 
 # =========================================================
-# STATUS
+# /STATUS
 # =========================================================
 
-@bot.command()
-async def status(ctx):
+@tree.command(
+    name="status",
+    description="Zeigt den aktuellen Zähler-Status."
+)
+async def status(interaction: discord.Interaction):
 
     if config["running"]:
+
         if config["paused"]:
             status_text = "⏸️ Pausiert"
         else:
             status_text = "🟢 Aktiv"
+
     else:
         status_text = "🔴 Gestoppt"
 
-    channel = "Nicht festgelegt"
+    channel_text = "Nicht festgelegt"
 
-    if config["channel_id"]:
-        channel_obj = bot.get_channel(config["channel_id"])
+    channel_obj = get_channel()
 
-        if channel_obj:
-            channel = channel_obj.mention
+    if channel_obj:
+        channel_text = channel_obj.mention
 
-    await ctx.send(
+    await interaction.response.send_message(
         "⚙️ **ZÄHLER-STATUS**\n\n"
         f"Status: {status_text}\n"
         f"📅 Aktueller Wert: **{config['day']}**\n"
         f"📈 Erhöhung: **{config['increment']:+d}**\n"
         f"⏰ Uhrzeit: **{config['hour']:02d}:{config['minute']:02d}**\n"
-        f"📢 Kanal: {channel}"
+        f"📢 Kanal: {channel_text}\n"
+        "🌍 Zeitzone: **Europe/Berlin**"
     )
 
 
 # =========================================================
-# RESET
+# /RESET
 # =========================================================
 
-@bot.command()
-@commands.has_permissions(manage_guild=True)
-async def reset(ctx):
+@tree.command(
+    name="reset",
+    description="Setzt den Zähler auf die Grundeinstellungen zurück."
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def reset(interaction: discord.Interaction):
 
-    config["running"] = False
-    config["paused"] = False
-    config["hour"] = 12
-    config["minute"] = 0
-    config["day"] = 1
-    config["increment"] = 1
-    config["last_run"] = ""
+    # Kanal behalten
+    channel_id = config["channel_id"]
+
+    config.clear()
+    config.update(DEFAULT_CONFIG.copy())
+
+    config["channel_id"] = channel_id
 
     save_config()
 
-    await ctx.send(
-        "♻️ **Zähler zurückgesetzt.**\n"
-        "Startwert: 1\n"
-        "Uhrzeit: 12:00\n"
-        "Erhöhung: +1"
+    await interaction.response.send_message(
+        "♻️ **Zähler zurückgesetzt.**\n\n"
+        "🔢 Startwert: **1**\n"
+        "📈 Erhöhung: **+1**\n"
+        "⏰ Uhrzeit: **12:00**"
     )
 
 
@@ -385,30 +505,37 @@ async def reset(ctx):
 # FEHLERBEHANDLUNG
 # =========================================================
 
-@bot.event
-async def on_command_error(ctx, error):
+@tree.error
+async def on_app_command_error(
+    interaction: discord.Interaction,
+    error
+):
 
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send(
+    if isinstance(
+        error,
+        app_commands.errors.MissingPermissions
+    ):
+
+        message = (
             "❌ Dafür brauchst du die Berechtigung "
             "**Server verwalten**."
         )
 
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(
-            "❌ Es fehlt ein Argument."
+    else:
+
+        print(f"Slash-Command-Fehler: {error}")
+
+        message = (
+            "❌ Bei dem Befehl ist ein Fehler aufgetreten."
         )
 
-    elif isinstance(error, commands.BadArgument):
-        await ctx.send(
-            "❌ Ungültiger Wert."
-        )
+    if interaction.response.is_done():
 
-    elif isinstance(error, commands.CommandNotFound):
-        pass
+        await interaction.followup.send(message)
 
     else:
-        print(f"Fehler: {error}")
+
+        await interaction.response.send_message(message)
 
 
 # =========================================================
